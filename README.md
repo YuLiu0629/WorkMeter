@@ -14,17 +14,10 @@ A lightweight, open-source, local-first macOS menu-bar utility for viewing **Cha
 
 ## 中文
 
-### 为什么做这个？
+### 干啥的
 
-ChatGPT Work / Codex 的额度信息需要进入 Usage 页面才能查看。对于经常使用 Work 或 Codex 的人来说，很难随时判断：
 
-- 5 小时额度还剩多少；
-- weekly allowance 还剩多少；
-- 下次什么时候 reset；
-- 当前账号有没有可用的 banked/full reset；
-- credits 是否还有余额。
-
-WorkMeter 把这些信息放到 Mac 顶部菜单栏里，让你不用反复打开 ChatGPT Settings。
+WorkMeter 把ChatGPT Work / Codex 的额度信息放到 Mac 顶部菜单栏里，让你不用反复打开 ChatGPT Settings。
 
 菜单栏会显示类似：
 
@@ -46,9 +39,9 @@ Plan: business
 Last updated: 20:31
 ```
 
-> 实际显示内容取决于你的账号和本机 Codex 版本能暴露哪些字段。WorkMeter 不会猜测没有返回的数据。
+> 实际显示内容取决于你的账号和本机 Codex 版本能暴露哪些字段。
 
-### 功能
+### 具体功能
 
 - 直接在 macOS 菜单栏显示 5-hour allowance
 - 显示 weekly allowance
@@ -142,7 +135,6 @@ chmod +x install.sh uninstall.sh diagnose.sh *.command
 
 ### 它是怎么工作的？
 
-WorkMeter 不抓取 ChatGPT 网页。
 
 每次刷新时，它会短暂启动你本机已经安装并登录的：
 
@@ -249,17 +241,9 @@ WorkMeter 目前仍是一个很小的个人开源项目。欢迎测试、反馈 
 
 ## English
 
-### Why WorkMeter?
+### Do what?
 
-ChatGPT Work / Codex usage information is normally buried in the Usage screen. If you use Work or Codex frequently, it is inconvenient to repeatedly check:
-
-- how much of the 5-hour allowance remains;
-- how much of the weekly allowance remains;
-- when each window resets;
-- whether banked/full resets are available;
-- whether extra credits are available.
-
-WorkMeter puts the useful parts in the macOS menu bar.
+WorkMeter puts ChatGPT Work / Codex usage information in the macOS menu bar.
 
 Typical menu-bar display:
 
@@ -377,7 +361,6 @@ WorkMeter installs to:
 
 ### How it works
 
-WorkMeter does not scrape the ChatGPT website.
 
 For each usage refresh, it briefly starts the locally installed and authenticated:
 
