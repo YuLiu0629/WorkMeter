@@ -1,0 +1,69 @@
+name: Build macOS Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal app
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk macosx --show-sdk-path)
+          mkdir -p build/x86_64 build/arm64 dist/WorkMeter/WorkMeter.app/Contents/MacOS
+
+          xcrun --sdk macosx swiftc \
+            -sdk "$SDK" \
+            -target x86_64-apple-macosx11.0 \
+            -O \
+            -framework AppKit \
+            -framework Foundation \
+            WorkMeter.swift \
+            -o build/x86_64/WorkMeter
+
+          xcrun --sdk macosx swiftc \
+            -sdk "$SDK" \
+            -target arm64-apple-macosx11.0 \
+            -O \
+            -framework AppKit \
+            -framework Foundation \
+            WorkMeter.swift \
+            -o build/arm64/WorkMeter
+
+          lipo -create build/x86_64/WorkMeter build/arm64/WorkMeter \
+            -output dist/WorkMeter/WorkMeter.app/Contents/MacOS/WorkMeter
+
+          chmod +x dist/WorkMeter/WorkMeter.app/Contents/MacOS/WorkMeter
+
+          cat > dist/WorkMeter/WorkMeter.app/Contents/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>WorkMeter</string>
+            <key>CFBundleIdentifier</key><string>app.workmeter.menubar</string>
+            <key>CFBundleName</key><string>WorkMeter</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSUIElement</key><true/>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Package
+        run: |
+          cd dist
+          ditto -c -k --keepParent WorkMeter WorkMeter-mac.zip
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/WorkMeter-mac.zip
