@@ -26,13 +26,15 @@ macOS 11+ · Intel & Apple Silicon · 免费开源 / Free & open source
    codex
    ```
 
-2. 从上面的 **Download** 下载 `WorkMeter-v0.2.1-mac.zip` 并解压。
+2. 从上面的 **Download** 下载 `WorkMeter-mac.zip` 并解压。
 
-3. 双击 **`Install WorkMeter.command`**。完成后顶部菜单栏会出现 `⚡`。
+3. **第一次请右键 / Control-click `Install WorkMeter.command` → 打开 / Open。** 完成后顶部菜单栏会出现 `⚡`。
 
-> macOS 第一次如果拦截安装器：右键 / Control-click `Install WorkMeter.command` → **打开 / Open**。
+> WorkMeter 目前没有使用 Apple Developer ID 签名 / notarization，所以直接双击下载来的安装器时，macOS 可能显示 “unidentified developer”。这是 Gatekeeper 对未 notarize 的网络下载程序的正常拦截。不要关闭 Gatekeeper；只需第一次右键 → Open。之后更新可直接运行安装器。
 
-以后更新也一样：**下载新版 → 再双击 Installer**，会直接覆盖更新，不用先卸载。
+如果你已经双击并看到拦截提示，也可以到 **System Settings → Privacy & Security → Open Anyway**。
+
+以后更新：**下载新版 → 再运行 Installer**，会直接覆盖更新，不用先卸载。
 
 ## 就这些
 
@@ -47,7 +49,7 @@ Free resets: 1
 
 断网时会继续显示最后一次确认的数据并加 `⚠`；恢复联网后自动刷新。ChatGPT 网页和 Desktop App 都不需要保持打开。
 
-**隐私：**不读取 ChatGPT 密码、浏览器 cookie 或 API key；usage cache 只保存在你的 Mac。详见 [`PRIVACY.md`](PRIVACY.md)。
+**隐私：**不读取 ChatGPT 密码、浏览器 cookie 或 API key；最小化的 usage cache 只保存在你的 Mac。详见 [`PRIVACY.md`](PRIVACY.md)。
 
 > WorkMeter 是独立开源项目，不是 OpenAI 官方产品，也不隶属于或代表 OpenAI。
 
@@ -67,11 +69,11 @@ Free resets: 1
    codex
    ```
 
-2. **[Download the latest release](https://github.com/YuLiu0629/WorkMeter/releases/latest)**, get `WorkMeter-v0.2.1-mac.zip`, and unzip it.
+2. **[Download the latest release](https://github.com/YuLiu0629/WorkMeter/releases/latest)** and unzip `WorkMeter-mac.zip`.
 
-3. Double-click **`Install WorkMeter.command`**. Look for `⚡` in the macOS menu bar.
+3. **For the first launch, Control-click `Install WorkMeter.command` and choose Open.** Look for `⚡` in the macOS menu bar.
 
-If macOS blocks the installer the first time, Control-click `Install WorkMeter.command` and choose **Open**.
+WorkMeter is not currently Developer ID-signed/notarized, so macOS Gatekeeper may block a normal double-click on the downloaded installer. Do not disable Gatekeeper; use Control-click → Open once. If you already tried to open it, you can also use **System Settings → Privacy & Security → Open Anyway**.
 
 Updating is the same: download the new version and run the installer again. It replaces the existing version automatically.
 
@@ -86,6 +88,9 @@ WorkMeter is an independent open-source project and is not affiliated with or en
 <details>
 <summary><strong>FAQ / 常见问题</strong></summary>
 
+**为什么 macOS 说 unidentified developer？ / Why does macOS say unidentified developer?**  
+因为当前 GitHub release 没有用 Apple Developer ID 签名并 notarize。第一次右键 / Control-click 安装器 → Open 即可。完全没有这一步需要 Developer ID signing + notarization，但不需要上架 App Store。
+
 **没网还能用吗？ / Does it work offline?**  
 可以显示最后一次确认的数据，并用 `⚠` 标记为旧数据。没有网络时无法获取新的额度变化。
 
@@ -93,7 +98,7 @@ WorkMeter is an independent open-source project and is not affiliated with or en
 不用。Codex CLI 只需要已经安装并登录。WorkMeter 刷新时会自己调用本机 Codex。
 
 **怎么卸载？ / How do I uninstall?**  
-运行仓库里的 `Uninstall WorkMeter.command`，或删除应用后清理 LaunchAgent。Release 包也包含卸载器。
+运行 Release 包里的 `Uninstall WorkMeter.command`。它会删除 WorkMeter、启动项、本地 cache 和日志，但不会删除 Codex 或退出 ChatGPT。
 
 **支持什么 Mac？ / Which Macs are supported?**  
 macOS 11+，Intel (`x86_64`) 和 Apple Silicon (`arm64`)。第一台确认测试机是 Intel Mac + macOS 14.6.1；欢迎其他机型反馈。
@@ -119,8 +124,8 @@ account/rateLimits/read
 
 v0.2.1 会把最后一次成功读取的 allowance snapshot 缓存到本机。如果缓存中的额度窗口已经超过原 reset 时间但当前仍离线，WorkMeter 会显示 `—`，不会自己假设额度已经恢复到 100%。
 
-仓库中的 `install.sh` 是源码安装方式；GitHub Release 的 `WorkMeter-v0.2.1-mac.zip` 则包含预编译 Universal macOS app，普通用户不需要本地 Swift compiler。
+仓库中的 `install.sh` 是源码安装 fallback；GitHub Release 包含预编译 Universal macOS app，普通用户不需要本地 Swift compiler。
 
 </details>
 
-[`CHANGELOG.md`](CHANGELOG.md) · [`PRIVACY.md`](PRIVACY.md) · MIT License
+[`PRIVACY.md`](PRIVACY.md) · MIT License
