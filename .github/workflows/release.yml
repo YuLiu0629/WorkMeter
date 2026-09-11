@@ -58,6 +58,15 @@ jobs:
           </plist>
           PLIST
 
+      - name: Prepare release bundle
+        run: |
+          set -euo pipefail
+          cp "release/Install WorkMeter.command" dist/WorkMeter/
+          cp "release/Uninstall WorkMeter.command" dist/WorkMeter/
+          cp "release/Diagnose WorkMeter.command" dist/WorkMeter/
+          cp "release/README-FIRST.txt" dist/WorkMeter/
+          chmod +x dist/WorkMeter/*.command
+
       - name: Package
         run: |
           cd dist
@@ -67,3 +76,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/WorkMeter-mac.zip
+          generate_release_notes: true
