@@ -5,6 +5,10 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
+    paths:
+      - '.release-version'
 
 permissions:
   contents: write
@@ -15,11 +19,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build universal app
+      - name: Resolve version
+        id: meta
+        shell: bash
         run: |
           set -euo pipefail
-          SDK=$(xcrun --sdk macosx --show-sdk-path)
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            VERSION="$GITHUB_REF_NAME"
+          elif [[ -f .release-version ]]; then
+            VERSION="$(tr -d '[:space:]' < .release-version)"
+          else
+            echo "No release version found" >&2
+            exit 1
+          fi
+          [[ "$VERSION" == v* ]] || VERSION="v$VERSION"
+          SHORT_VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_version=$SHORT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build universal app
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.short_version }}"
+          SDK="$(xcrun --sdk macosx --show-sdk-path)"
           mkdir -p build/x86_64 build/arm64 dist/WorkMeter/WorkMeter.app/Contents/MacOS
+
+          # Build a release copy so the app-server client version matches the release.
+          cp WorkMeter.swift build/WorkMeter.release.swift
+          sed -i '' "s/private let appVersion = \"[^\"]*\"/private let appVersion = \"$VERSION\"/" build/WorkMeter.release.swift
 
           xcrun --sdk macosx swiftc \
             -sdk "$SDK" \
@@ -27,7 +55,7 @@ jobs:
             -O \
             -framework AppKit \
             -framework Foundation \
-            WorkMeter.swift \
+            build/WorkMeter.release.swift \
             -o build/x86_64/WorkMeter
 
           xcrun --sdk macosx swiftc \
@@ -36,44 +64,66 @@ jobs:
             -O \
             -framework AppKit \
             -framework Foundation \
-            WorkMeter.swift \
+            build/WorkMeter.release.swift \
             -o build/arm64/WorkMeter
 
           lipo -create build/x86_64/WorkMeter build/arm64/WorkMeter \
             -output dist/WorkMeter/WorkMeter.app/Contents/MacOS/WorkMeter
-
           chmod +x dist/WorkMeter/WorkMeter.app/Contents/MacOS/WorkMeter
 
-          cat > dist/WorkMeter/WorkMeter.app/Contents/Info.plist <<'PLIST'
+          cat > dist/WorkMeter/WorkMeter.app/Contents/Info.plist <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
+            <key>CFBundleDevelopmentRegion</key><string>en</string>
             <key>CFBundleExecutable</key><string>WorkMeter</string>
             <key>CFBundleIdentifier</key><string>app.workmeter.menubar</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
             <key>CFBundleName</key><string>WorkMeter</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>LSUIElement</key><true/>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>1</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSUIElement</key><true/>
           </dict>
           </plist>
           PLIST
 
+          plutil -lint dist/WorkMeter/WorkMeter.app/Contents/Info.plist
+          lipo -info dist/WorkMeter/WorkMeter.app/Contents/MacOS/WorkMeter
+
+          # Ad-hoc signing gives the installer a local integrity check. It is not
+          # Developer ID signing and does not remove the first-open Gatekeeper step.
+          codesign --force --deep --sign - dist/WorkMeter/WorkMeter.app
+          codesign --verify --deep --strict --verbose=2 dist/WorkMeter/WorkMeter.app
+
       - name: Prepare release bundle
+        shell: bash
         run: |
           set -euo pipefail
           cp "release/Install WorkMeter.command" dist/WorkMeter/
           cp "release/Uninstall WorkMeter.command" dist/WorkMeter/
           cp "release/Diagnose WorkMeter.command" dist/WorkMeter/
           cp "release/README-FIRST.txt" dist/WorkMeter/
+          cp LICENSE dist/WorkMeter/
+          cp PRIVACY.md dist/WorkMeter/
           chmod +x dist/WorkMeter/*.command
 
       - name: Package
+        shell: bash
         run: |
+          set -euo pipefail
           cd dist
           ditto -c -k --keepParent WorkMeter WorkMeter-mac.zip
+          shasum -a 256 WorkMeter-mac.zip
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.meta.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: WorkMeter ${{ steps.meta.outputs.version }}
           files: dist/WorkMeter-mac.zip
           generate_release_notes: true
+          make_latest: true
