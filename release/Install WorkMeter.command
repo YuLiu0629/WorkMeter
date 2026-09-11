@@ -1,7 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-APP_NAME="WorkMeter"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOURCE_APP="$SCRIPT_DIR/WorkMeter.app"
 DEST_DIR="$HOME/Applications"
@@ -21,6 +20,13 @@ say ""
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "WorkMeter only supports macOS. / WorkMeter 仅支持 macOS。"
 [[ -d "$SOURCE_APP" ]] || fail "WorkMeter.app is missing. Please keep the installer and app in the same folder. / 找不到 WorkMeter.app，请不要把安装器单独移出文件夹。"
+
+# The release app is ad-hoc signed in GitHub Actions. Verify that the bundle
+# was not damaged before installing it. Ad-hoc signing checks code integrity;
+# it does not identify the developer to Apple.
+if ! codesign --verify --deep --strict "$SOURCE_APP" >/dev/null 2>&1; then
+  fail "WorkMeter.app failed its local integrity check. Please download the release again. / WorkMeter.app 完整性检查失败，请重新下载。"
+fi
 
 CODEX=""
 if command -v codex >/dev/null 2>&1; then
@@ -43,6 +49,7 @@ if [[ -z "$CODEX" ]]; then
   fail "Codex CLI was not found. / 没找到 Codex CLI。"
 fi
 
+say "✓ WorkMeter integrity check passed / 完整性检查通过"
 say "✓ Codex found / 已找到 Codex"
 if "$CODEX" login status >/dev/null 2>&1; then
   say "✓ ChatGPT sign-in detected / 已检测到登录"
@@ -61,6 +68,13 @@ rm -f "$LEGACY_PLIST"
 mkdir -p "$DEST_DIR" "$SUPPORT_DIR" "$LAUNCH_DIR"
 rm -rf "$DEST_APP"
 ditto "$SOURCE_APP" "$DEST_APP"
+
+# A browser download marks the ZIP and extracted app with Apple's quarantine
+# attribute. The user has explicitly chosen to run this installer, so clear
+# quarantine only from the exact WorkMeter copy we just installed. This avoids
+# a second "developer cannot be verified" prompt for the unsigned OSS build.
+xattr -dr com.apple.quarantine "$DEST_APP" 2>/dev/null || true
+
 printf '%s\n' "$CODEX" > "$SUPPORT_DIR/codex-path.txt"
 
 cat > "$PLIST" <<PLIST
@@ -86,8 +100,8 @@ if pgrep -x WorkMeter >/dev/null 2>&1; then
 else
   say "✓ WorkMeter installed. / 安装完成。"
   say ""
-  say "If macOS blocks the app, open ~/Applications, Control-click WorkMeter, then choose Open once."
-  say "如果 macOS 拦截应用，请打开 ~/Applications，右键 WorkMeter → 打开，一次即可。"
+  say "If it still does not open, Control-click ~/Applications/WorkMeter.app and choose Open once."
+  say "如果仍未启动，请到 ~/Applications，右键 WorkMeter.app → 打开，一次即可。"
 fi
 say ""
 say "Look for ⚡ in your Mac menu bar. / 请在 Mac 顶部菜单栏寻找 ⚡。"
