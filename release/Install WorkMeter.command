@@ -26,6 +26,10 @@ fail() {
   exit 1
 }
 
+is_installed_workmeter_running() {
+  ps -axo command= | grep -F -x "$DEST_BIN" >/dev/null 2>&1
+}
+
 clear || true
 say "⚡ WorkMeter Installer"
 say "────────────────────────"
@@ -115,13 +119,17 @@ if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
   launchctl load "$PLIST" 2>/dev/null || true
 fi
 launchctl kickstart -k "$DOMAIN/$LABEL" 2>/dev/null || true
+sleep 1
 
-# Also ask LaunchServices to open it. If that fails silently, direct execution
-# below gives the user a working session and leaves useful diagnostics.
-open "$DEST_APP" 2>/dev/null || true
-sleep 2
+# Only ask LaunchServices to open the app if launchd did not already start it.
+# This prevents the installer from creating two simultaneous menu-bar instances.
+if ! is_installed_workmeter_running; then
+  open "$DEST_APP" 2>/dev/null || true
+  sleep 2
+fi
 
-if ! pgrep -x WorkMeter >/dev/null 2>&1; then
+# Final fallback: run the installed executable directly and capture diagnostics.
+if ! is_installed_workmeter_running; then
   say "! LaunchAgent did not start WorkMeter; trying the app binary directly…"
   say "! 启动项未成功启动，正在直接启动 WorkMeter…"
   nohup "$DEST_BIN" >>"$LOG" 2>&1 </dev/null &
@@ -129,7 +137,7 @@ if ! pgrep -x WorkMeter >/dev/null 2>&1; then
 fi
 
 say ""
-if pgrep -x WorkMeter >/dev/null 2>&1; then
+if is_installed_workmeter_running; then
   VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$DEST_APP/Contents/Info.plist" 2>/dev/null || echo unknown)"
   say "✓ WorkMeter $VERSION installed and running! / 安装完成并已启动！"
   say "✓ Look for ⚡ in your Mac menu bar. / 请在 Mac 顶部菜单栏寻找 ⚡。"
