@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.3
+
+### Fixed
+
+- Prevented the installer from launching duplicate WorkMeter menu-bar instances.
+- The installer now checks whether the installed WorkMeter process is already running before using LaunchServices or the direct-binary fallback.
+
 ## v0.2.2
 
 ### Fixed
