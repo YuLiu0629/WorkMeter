@@ -30,6 +30,18 @@ is_installed_workmeter_running() {
   ps -axo command= | grep -F -x "$DEST_BIN" >/dev/null 2>&1
 }
 
+wait_for_workmeter() {
+  local attempts=0
+  while (( attempts < 20 )); do
+    if is_installed_workmeter_running; then
+      return 0
+    fi
+    sleep 0.25
+    attempts=$((attempts + 1))
+  done
+  return 1
+}
+
 clear || true
 say "⚡ WorkMeter Installer"
 say "────────────────────────"
@@ -43,8 +55,6 @@ if ! /usr/bin/plutil -lint "$SOURCE_APP/Contents/Info.plist" >/dev/null 2>&1; th
   fail "WorkMeter.app has an invalid Info.plist. Please download the release again. / WorkMeter.app 的 Info.plist 无效，请重新下载。"
 fi
 
-# Release builds are ad-hoc signed. This verifies code integrity only; it does
-# not identify the developer to Apple and is not Developer ID notarization.
 if ! /usr/bin/codesign --verify --deep --strict "$SOURCE_APP" >/dev/null 2>&1; then
   fail "WorkMeter.app failed its local integrity check. Please download the release again. / WorkMeter.app 完整性检查失败，请重新下载。"
 fi
@@ -88,12 +98,7 @@ rm -f "$LEGACY_PLIST"
 mkdir -p "$DEST_DIR" "$SUPPORT_DIR" "$LAUNCH_DIR" "$(dirname "$LOG")"
 rm -rf "$DEST_APP"
 /usr/bin/ditto "$SOURCE_APP" "$DEST_APP"
-
-# Browser downloads carry Apple's quarantine attribute. The user explicitly
-# opened this installer, so remove quarantine only from the installed WorkMeter
-# copy; do not disable Gatekeeper globally.
 xattr -dr com.apple.quarantine "$DEST_APP" 2>/dev/null || true
-
 printf '%s\n' "$CODEX" > "$SUPPORT_DIR/codex-path.txt"
 
 cat > "$PLIST" <<PLIST
@@ -114,26 +119,20 @@ PLIST
 
 /usr/bin/plutil -lint "$PLIST" >/dev/null
 
-# Modern launchctl path first; legacy load remains as a compatibility fallback.
+# launchd is the single normal startup path. Do not also call `open`, because
+# LaunchServices can race with launchd and briefly create a second menu-bar app.
 if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
   launchctl load "$PLIST" 2>/dev/null || true
 fi
 launchctl kickstart -k "$DOMAIN/$LABEL" 2>/dev/null || true
-sleep 1
 
-# Only ask LaunchServices to open the app if launchd did not already start it.
-# This prevents the installer from creating two simultaneous menu-bar instances.
-if ! is_installed_workmeter_running; then
-  open "$DEST_APP" 2>/dev/null || true
-  sleep 2
-fi
-
-# Final fallback: run the installed executable directly and capture diagnostics.
-if ! is_installed_workmeter_running; then
+# Give launchd up to five seconds to create the process before using one direct
+# executable fallback. This removes the transient duplicate seen on slower Macs.
+if ! wait_for_workmeter; then
   say "! LaunchAgent did not start WorkMeter; trying the app binary directly…"
   say "! 启动项未成功启动，正在直接启动 WorkMeter…"
   nohup "$DEST_BIN" >>"$LOG" 2>&1 </dev/null &
-  sleep 2
+  wait_for_workmeter || true
 fi
 
 say ""
