@@ -2,17 +2,13 @@
 
 **中文 | English**
 
-WorkMeter is intentionally local-first. / WorkMeter 采用 local-first 设计。
-
----
+WorkMeter 采用 local-first 设计。它没有自己的云端服务，也不会把你的 Work/Codex usage 数据发送给项目作者。
 
 ## 中文
 
 ### WorkMeter 会读取什么？
 
-WorkMeter 会向你本机已经安装的 Codex App Server 请求 `account/rateLimits/read` 返回的账号 rate-limit snapshot。
-
-根据账号类型和 Codex 版本，其中可能包括：
+WorkMeter 通过你本机已登录的 Codex App Server 请求 `account/rateLimits/read`。根据账号类型和 Codex 版本，返回内容可能包括：
 
 - allowance windows；
 - reset timestamps；
@@ -20,55 +16,42 @@ WorkMeter 会向你本机已经安装的 Codex App Server 请求 `account/rateLi
 - 可用 reset-credit 数量；
 - plan type。
 
-### WorkMeter 会在磁盘上保存什么？
+### WorkMeter 会在本机保存什么？
 
-WorkMeter 只保存：
+WorkMeter 只保存运行所需的最少数据：
 
-- 本机 `codex` 可执行文件的路径；
-- 本地诊断日志，包括启动、刷新成功或刷新错误信息。
+- 本机 `codex` 可执行文件路径：`~/Library/Application Support/WorkMeter/codex-path.txt`
+- 最后一次成功读取的 usage snapshot：`~/Library/Application Support/WorkMeter/last-usage.json`
+- 本地诊断日志：`~/Library/Logs/WorkMeter.log`
 
-WorkMeter 不会主动把返回的 allowance snapshot 持久化保存到磁盘。
+`last-usage.json` 用于断网或 OpenAI 暂时不可达时显示 **last known usage**。其中只包含类似 allowance 百分比、reset 时间、credits/reset 数量、plan type 和最后更新时间的数据，不包含 ChatGPT 密码、浏览器 cookie、API key 或 Codex authentication token。
 
 ### 网络行为
 
-WorkMeter 本身没有独立的远程 WorkMeter 服务，也不会把你的 usage 数据发送到作者运营的服务器。
-
-为了读取账号 allowance，本机 Codex 进程可能会按照 Codex 自己的正常认证和运行机制与 OpenAI 通信。
+WorkMeter 没有独立的 WorkMeter 服务器。为了读取最新 allowance，本机 Codex 进程会按照 Codex 自己的正常认证机制与 OpenAI 通信。
 
 ### 身份认证
 
-身份认证由 Codex 自己负责。
-
-WorkMeter 不会：
+身份认证由 Codex 自己负责。WorkMeter 不会：
 
 - 请求或保存你的 ChatGPT 密码；
 - 读取或解析 ChatGPT 浏览器 cookie；
-- 复制或解析你的 Codex authentication file；
+- 复制或解析 Codex authentication file；
 - 要求 OpenAI API key。
-
-### 日志
-
-诊断日志位于：
-
-```text
-~/Library/Logs/WorkMeter.log
-```
-
-如果你要把日志发到 GitHub Issue，请先检查内容并确认没有你不希望公开的信息。
 
 ### 删除本地数据
 
-运行 `uninstall.sh` 或双击 `Uninstall WorkMeter.command` 可以移除 WorkMeter 应用及其启动配置。
+运行 Release 包中的 `Uninstall WorkMeter.command` 会删除 WorkMeter app、LaunchAgent、上述 support/cache 文件和 WorkMeter 日志。它不会卸载 Codex，也不会退出你的 ChatGPT/Codex 登录。
 
 ---
 
 ## English
 
+WorkMeter is local-first. It has no WorkMeter-operated cloud service and does not send your Work/Codex usage data to the project author.
+
 ### What WorkMeter reads
 
-WorkMeter asks the locally installed Codex App Server for the account rate-limit snapshot exposed by `account/rateLimits/read`.
-
-Depending on the account and installed Codex version, this may include:
+WorkMeter asks the locally authenticated Codex App Server for `account/rateLimits/read`. Depending on the account and Codex version, the response may include:
 
 - allowance windows;
 - reset timestamps;
@@ -76,42 +59,29 @@ Depending on the account and installed Codex version, this may include:
 - available reset-credit count;
 - plan type.
 
-### What WorkMeter stores
+### What WorkMeter stores locally
 
-WorkMeter stores only:
+WorkMeter stores only the minimum data needed to operate:
 
-- the filesystem path to the local `codex` executable;
-- a local diagnostic log containing startup, refresh-success, or refresh-error messages.
+- the local `codex` executable path at `~/Library/Application Support/WorkMeter/codex-path.txt`;
+- the last successful usage snapshot at `~/Library/Application Support/WorkMeter/last-usage.json`;
+- a diagnostic log at `~/Library/Logs/WorkMeter.log`.
 
-WorkMeter does not intentionally persist the returned allowance snapshot to disk.
+`last-usage.json` is used to show **last known usage** when the Mac is offline or OpenAI is temporarily unreachable. It contains only fields such as allowance percentages, reset times, credits/reset counts, plan type, and the last-confirmed timestamp. It does not contain your ChatGPT password, browser cookies, API key, or Codex authentication token.
 
 ### Network behavior
 
-WorkMeter does not operate a separate remote WorkMeter service and does not send your usage data to a server operated by the author.
-
-The local Codex process may communicate with OpenAI as part of its normal authenticated operation when retrieving account allowance information.
+WorkMeter does not operate a separate WorkMeter server. The local Codex process may communicate with OpenAI through Codex's normal authenticated mechanism when fresh allowance data is requested.
 
 ### Authentication
 
-Authentication is owned by Codex.
-
-WorkMeter does not:
+Authentication is owned by Codex. WorkMeter does not:
 
 - request or store your ChatGPT password;
 - read or parse ChatGPT browser cookies;
-- copy or parse your Codex authentication file;
+- copy or parse the Codex authentication file;
 - require an OpenAI API key.
-
-### Logs
-
-The diagnostic log is stored at:
-
-```text
-~/Library/Logs/WorkMeter.log
-```
-
-Before posting logs in a GitHub Issue, review them and remove anything you do not want to share publicly.
 
 ### Removing local data
 
-Run `uninstall.sh` or double-click `Uninstall WorkMeter.command` to remove the WorkMeter app and launch configuration.
+Running `Uninstall WorkMeter.command` from the Release bundle removes the WorkMeter app, LaunchAgent, support/cache files above, and WorkMeter logs. It does not uninstall Codex or sign you out of ChatGPT/Codex.
