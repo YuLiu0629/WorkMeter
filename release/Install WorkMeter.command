@@ -119,15 +119,14 @@ PLIST
 
 /usr/bin/plutil -lint "$PLIST" >/dev/null
 
-# launchd is the single normal startup path. Do not also call `open`, because
-# LaunchServices can race with launchd and briefly create a second menu-bar app.
+# RunAtLoad already starts the job when bootstrap succeeds. Do NOT follow it
+# with `launchctl kickstart -k`: that command kills/restarts the just-started
+# process and can leave two menu-bar instances visible during the handover.
 if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
   launchctl load "$PLIST" 2>/dev/null || true
 fi
-launchctl kickstart -k "$DOMAIN/$LABEL" 2>/dev/null || true
 
-# Give launchd up to five seconds to create the process before using one direct
-# executable fallback. This removes the transient duplicate seen on slower Macs.
+# Give launchd up to five seconds to start the single normal instance.
 if ! wait_for_workmeter; then
   say "! LaunchAgent did not start WorkMeter; trying the app binary directly…"
   say "! 启动项未成功启动，正在直接启动 WorkMeter…"
