@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.3.0
+
+### Added
+
+- Experimental ChatGPT advanced-feature usage import from clipboard.
+- Pro / Reasoning allowance display, including reset time and blocked state when exposed by ChatGPT Web.
+- Deep Research remaining-count display and reset time.
+- Image Generation remaining-count display and reset time.
+- Local cache for imported ChatGPT usage metadata.
+- In-app import guide and clear-import action.
+
+### Privacy
+
+- ChatGPT advanced usage is imported manually from copied response JSON.
+- WorkMeter does not read browser cookies, session tokens, passwords, or private browser storage.
+
+## v0.2.4
+
+### Fixed
+
+- Removed the extra launch restart path that could create duplicate menu-bar instances during installation.
+
 ## v0.2.3
 
 ### Fixed
