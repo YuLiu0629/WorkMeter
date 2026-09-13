@@ -1,13 +1,13 @@
 # ⚡ WorkMeter
 
-**ChatGPT Work / Codex 额度，直接显示在 Mac 菜单栏。**  
-**See your ChatGPT Work / Codex allowance directly from the macOS menu bar.**
+**ChatGPT / Codex 额度，直接显示在 Mac 菜单栏。**  
+**See ChatGPT / Codex usage directly from the macOS menu bar.**
 
 ```text
-⚡ 5h 72% · W 84%
+⚡ 5h 72% · W 84% · P 9/15
 ```
 
-不用反复打开 Settings。点一下还能看 reset 倒计时、credits 和可用 resets（如果你的账号返回这些信息）。
+不用反复打开 Settings。点一下可以看 Codex 5-hour / weekly、reset countdown、credits、free resets，以及实验性的 ChatGPT Pro / Reasoning、Deep Research、Image Generation usage。
 
 ## 下载 / Download
 
@@ -26,19 +26,17 @@ macOS 11+ · Intel & Apple Silicon · 免费开源 / Free & open source
    codex
    ```
 
-2. 从上面的 **Download** 下载 `WorkMeter-mac.zip` 并解压。
+2. 下载 `WorkMeter-mac.zip` 并解压。
 
-3. **第一次请右键 / Control-click `Install WorkMeter.command` → 打开 / Open。** 完成后顶部菜单栏会出现 `⚡`。
+3. **第一次右键 / Control-click `Install WorkMeter.command` → Open。** 完成后顶部菜单栏会出现 `⚡`。
 
-> WorkMeter 目前没有使用 Apple Developer ID 签名 / notarization，所以直接双击下载来的安装器时，macOS 可能显示 “unidentified developer”。这是 Gatekeeper 对未 notarize 的网络下载程序的正常拦截。不要关闭 Gatekeeper；只需第一次右键 → Open。之后更新可直接运行安装器。
+> WorkMeter 当前没有 Apple Developer ID notarization，所以第一次从网络下载后 macOS 可能提示 unidentified developer。不要关闭 Gatekeeper；右键 → Open 一次即可。
 
-如果你已经双击并看到拦截提示，也可以到 **System Settings → Privacy & Security → Open Anyway**。
+以后更新：**下载新版 → 再运行 Installer**，会直接覆盖旧版本。
 
-以后更新：**下载新版 → 再运行 Installer**，会直接覆盖更新，不用先卸载。
+## 自动显示：Work / Codex
 
-## 就这些
-
-WorkMeter 会自动刷新：
+WorkMeter 会通过本机已经登录的 Codex 自动刷新：
 
 ```text
 5-hour: 72% left · resets in 3h 18m
@@ -47,85 +45,92 @@ Credits: 0
 Free resets: 1
 ```
 
-断网时会继续显示最后一次确认的数据并加 `⚠`；恢复联网后自动刷新。ChatGPT 网页和 Desktop App 都不需要保持打开。
+断网时继续显示最后一次确认的数据，并加 `⚠`；恢复联网后自动刷新。
 
-**隐私：**不读取 ChatGPT 密码、浏览器 cookie 或 API key；最小化的 usage cache 只保存在你的 Mac。详见 [`PRIVACY.md`](PRIVACY.md)。
+## v0.3 实验功能：ChatGPT advanced usage
+
+ChatGPT Web 还会暴露一些独立额度，例如：
+
+```text
+Pro / Reasoning: 0 / 15 remaining · resets in 28d
+Deep Research: 25 remaining · resets in 29d
+Image generation: 118 remaining · resets in 15h
+```
+
+OpenAI 目前没有通过 WorkMeter 使用的 Codex App Server 暴露这些 ChatGPT Web counters。为了不读取你的 browser cookies / session token，**v0.3 使用手动、local-only import**：
+
+1. ChatGPT Web → DevTools → Network。
+2. Reload 页面，找到 `/backend-api/conversation/init`。
+3. 在 Response 中复制完整的 `conversation_detail_metadata` JSON object。
+4. 点击 WorkMeter → **Import ChatGPT usage from clipboard…**。
+
+详细步骤：[`docs/CHATGPT-USAGE.md`](docs/CHATGPT-USAGE.md)
+
+> 这部分目前不是自动 live tracking。重新 import 才会更新 ChatGPT advanced-feature counters。WorkMeter 不会伪造没有暴露出来的 remaining percentage/count。
+
+## Privacy / 隐私
+
+WorkMeter 采用 local-first 设计：
+
+- 不需要 ChatGPT 密码；
+- 不读取 browser cookies 或 session token；
+- 不需要 API key；
+- 不读取/复制 Codex authentication file；
+- usage cache 只保存在你的 Mac；
+- 没有 WorkMeter 自己的云服务器。
+
+详见 [`PRIVACY.md`](PRIVACY.md)。
 
 > WorkMeter 是独立开源项目，不是 OpenAI 官方产品，也不隶属于或代表 OpenAI。
 
 ---
 
 <details>
-<summary><strong>English instructions</strong></summary>
-
-## Install in 3 steps
-
-**Already have Codex CLI? Start at step 2.**
-
-1. Install Codex CLI, run `codex`, and choose **Sign in with ChatGPT**.
-
-   ```bash
-   brew install --cask codex
-   codex
-   ```
-
-2. **[Download the latest release](https://github.com/YuLiu0629/WorkMeter/releases/latest)** and unzip `WorkMeter-mac.zip`.
-
-3. **For the first launch, Control-click `Install WorkMeter.command` and choose Open.** Look for `⚡` in the macOS menu bar.
-
-WorkMeter is not currently Developer ID-signed/notarized, so macOS Gatekeeper may block a normal double-click on the downloaded installer. Do not disable Gatekeeper; use Control-click → Open once. If you already tried to open it, you can also use **System Settings → Privacy & Security → Open Anyway**.
-
-Updating is the same: download the new version and run the installer again. It replaces the existing version automatically.
-
-WorkMeter refreshes automatically, keeps the last confirmed usage visible when offline with a `⚠` indicator, and refreshes again when connectivity returns. ChatGPT Web/Desktop does not need to stay open.
-
-**Privacy:** no ChatGPT password, browser-cookie, or API-key access. The minimal usage cache stays on your Mac. See [`PRIVACY.md`](PRIVACY.md).
-
-WorkMeter is an independent open-source project and is not affiliated with or endorsed by OpenAI.
-
-</details>
-
-<details>
 <summary><strong>FAQ / 常见问题</strong></summary>
 
-**为什么 macOS 说 unidentified developer？ / Why does macOS say unidentified developer?**  
-因为当前 GitHub release 没有用 Apple Developer ID 签名并 notarize。第一次右键 / Control-click 安装器 → Open 即可。完全没有这一步需要 Developer ID signing + notarization，但不需要上架 App Store。
+**为什么 macOS 说 unidentified developer？**  
+当前 release 没有 Developer ID signing + notarization。第一次右键 Installer → Open 即可，不需要关闭 Gatekeeper，也不需要上架 App Store。
 
-**没网还能用吗？ / Does it work offline?**  
-可以显示最后一次确认的数据，并用 `⚠` 标记为旧数据。没有网络时无法获取新的额度变化。
+**没网还能用吗？**  
+Codex 会显示 last-known usage。ChatGPT advanced usage 本身就是手动 imported snapshot。
 
-**要一直开着 ChatGPT 或 Codex 吗？ / Must ChatGPT or Codex stay open?**  
-不用。Codex CLI 只需要已经安装并登录。WorkMeter 刷新时会自己调用本机 Codex。
+**要一直开着 ChatGPT 或 Codex 吗？**  
+Codex 自动额度不需要。ChatGPT advanced usage import 时需要你在网页里复制一次 metadata，之后网页可以关掉。
 
-**怎么卸载？ / How do I uninstall?**  
-运行 Release 包里的 `Uninstall WorkMeter.command`。它会删除 WorkMeter、启动项、本地 cache 和日志，但不会删除 Codex 或退出 ChatGPT。
+**为什么 ChatGPT advanced usage 不是自动的？**  
+因为当前数据来自 ChatGPT Web authenticated session。WorkMeter 不读取浏览器 cookie/session。等 OpenAI 提供受支持的 API/local interface 后，可以把 provider 换成自动刷新，而不需要重写 UI。
 
-**支持什么 Mac？ / Which Macs are supported?**  
-macOS 11+，Intel (`x86_64`) 和 Apple Silicon (`arm64`)。第一台确认测试机是 Intel Mac + macOS 14.6.1；欢迎其他机型反馈。
+**怎么卸载？**  
+运行 `Uninstall WorkMeter.command`。它会删除 WorkMeter、LaunchAgent、local caches 和日志，但不会删除 Codex 或退出 ChatGPT。
+
+**支持什么 Mac？**  
+macOS 11+，Intel (`x86_64`) 和 Apple Silicon (`arm64`)。
 
 </details>
 
 <details>
 <summary><strong>Technical details / 技术细节</strong></summary>
 
-WorkMeter 是原生 AppKit 菜单栏应用。刷新时会短暂启动本机：
+Work/Codex 自动刷新使用：
 
 ```text
 codex app-server --stdio
-```
-
-并读取：
-
-```text
 account/rateLimits/read
 ```
 
-它不会抓取 ChatGPT Settings 网页。
+ChatGPT advanced-feature v0.3 provider 只解析用户手动复制的 `conversation_detail_metadata`，支持 `blocked_features`、`model_limits` 和 `limits_progress` 中已知字段。
 
-v0.2.1 会把最后一次成功读取的 allowance snapshot 缓存到本机。如果缓存中的额度窗口已经超过原 reset 时间但当前仍离线，WorkMeter 会显示 `—`，不会自己假设额度已经恢复到 100%。
+本地文件：
 
-仓库中的 `install.sh` 是源码安装 fallback；GitHub Release 包含预编译 Universal macOS app，普通用户不需要本地 Swift compiler。
+```text
+~/Library/Application Support/WorkMeter/codex-path.txt
+~/Library/Application Support/WorkMeter/last-usage.json
+~/Library/Application Support/WorkMeter/chatgpt-usage.json
+~/Library/Logs/WorkMeter.log
+```
+
+GitHub Release 包含预编译 Universal macOS app，普通用户不需要 Swift compiler。
 
 </details>
 
-[`PRIVACY.md`](PRIVACY.md) · MIT License
+[`PRIVACY.md`](PRIVACY.md) · [`CHANGELOG.md`](CHANGELOG.md) · MIT License
