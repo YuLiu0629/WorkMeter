@@ -26,6 +26,21 @@ private struct UsageSnapshot: Codable {
     let fetchedAt: Date
 }
 
+private struct ChatGPTFeatureSnapshot: Codable {
+    let name: String
+    let remaining: Int?
+    let limit: Double?
+    let resetsAt: Date?
+    let blocked: Bool
+}
+
+private struct ChatGPTUsageSnapshot: Codable {
+    let reason: ChatGPTFeatureSnapshot?
+    let deepResearch: ChatGPTFeatureSnapshot?
+    let imageGen: ChatGPTFeatureSnapshot?
+    let blockedModels: [String]
+    let importedAt: Date
+}
 
 private final class UsageCache {
     private let cacheFile = FileManager.default.homeDirectoryForCurrentUser
@@ -51,6 +66,37 @@ private final class UsageCache {
         } catch {
             WorkMeterLog.write("cache write failed: \(error.localizedDescription)")
         }
+    }
+}
+
+private final class ChatGPTUsageCache {
+    private let cacheFile = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/WorkMeter/chatgpt-usage.json")
+
+    func load() -> ChatGPTUsageSnapshot? {
+        guard let data = try? Data(contentsOf: cacheFile) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return try? decoder.decode(ChatGPTUsageSnapshot.self, from: data)
+    }
+
+    func save(_ snapshot: ChatGPTUsageSnapshot) {
+        let fm = FileManager.default
+        let directory = cacheFile.deletingLastPathComponent()
+        do {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .secondsSince1970
+            encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+            let data = try encoder.encode(snapshot)
+            try data.write(to: cacheFile, options: .atomic)
+        } catch {
+            WorkMeterLog.write("ChatGPT usage cache write failed: \(error.localizedDescription)")
+        }
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: cacheFile)
     }
 }
 
@@ -81,6 +127,166 @@ private enum WorkMeterError: LocalizedError {
         case .invalidResponse:
             return "Codex returned an unexpected rate-limit response."
         }
+    }
+}
+
+private enum ChatGPTImportError: LocalizedError {
+    case emptyClipboard
+    case invalidJSON
+    case metadataNotFound
+    case noSupportedUsageFields
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyClipboard:
+            return "The clipboard does not contain text."
+        case .invalidJSON:
+            return "The clipboard is not valid JSON. Copy the conversation_detail_metadata object from ChatGPT Web."
+        case .metadataNotFound:
+            return "Could not find a conversation_detail_metadata object in the copied JSON."
+        case .noSupportedUsageFields:
+            return "The metadata did not contain Pro/Reasoning, Deep Research, or Image Generation usage fields."
+        }
+    }
+}
+
+private enum WorkMeterISODate {
+    private static let fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let plain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    static func parse(_ text: String?) -> Date? {
+        guard let text = text, !text.isEmpty else { return nil }
+        return fractional.date(from: text) ?? plain.date(from: text)
+    }
+}
+
+private final class ChatGPTUsageImporter {
+    func parse(_ text: String, previous: ChatGPTUsageSnapshot?) -> Result<ChatGPTUsageSnapshot, Error> {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .failure(ChatGPTImportError.emptyClipboard) }
+
+        guard let object = parseJSONObject(from: trimmed) else {
+            return .failure(ChatGPTImportError.invalidJSON)
+        }
+        guard let metadata = findMetadata(in: object) else {
+            return .failure(ChatGPTImportError.metadataNotFound)
+        }
+
+        let blocked = metadata["blocked_features"] as? [[String: Any]] ?? []
+        let progress = metadata["limits_progress"] as? [[String: Any]] ?? []
+        let modelLimits = metadata["model_limits"] as? [[String: Any]] ?? []
+        let blockedModels = modelLimits.compactMap { $0["model_slug"] as? String }
+
+        let reason = parseFeature(
+            name: "reason",
+            blocked: blocked,
+            progress: progress,
+            previousLimit: previous?.reason?.limit
+        )
+        let deepResearch = parseFeature(
+            name: "deep_research",
+            blocked: blocked,
+            progress: progress,
+            previousLimit: previous?.deepResearch?.limit
+        )
+        let imageGen = parseFeature(
+            name: "image_gen",
+            blocked: blocked,
+            progress: progress,
+            previousLimit: previous?.imageGen?.limit
+        )
+
+        guard reason != nil || deepResearch != nil || imageGen != nil || !blockedModels.isEmpty else {
+            return .failure(ChatGPTImportError.noSupportedUsageFields)
+        }
+
+        return .success(ChatGPTUsageSnapshot(
+            reason: reason,
+            deepResearch: deepResearch,
+            imageGen: imageGen,
+            blockedModels: blockedModels,
+            importedAt: Date()
+        ))
+    }
+
+    private func parseJSONObject(from text: String) -> Any? {
+        if let data = text.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) {
+            return object
+        }
+
+        guard let first = text.firstIndex(of: "{"),
+              let last = text.lastIndex(of: "}"),
+              first <= last else {
+            return nil
+        }
+        let candidate = String(text[first...last])
+        guard let data = candidate.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private func findMetadata(in value: Any) -> [String: Any]? {
+        if let dictionary = value as? [String: Any] {
+            if (dictionary["type"] as? String) == "conversation_detail_metadata" {
+                return dictionary
+            }
+            for child in dictionary.values {
+                if let found = findMetadata(in: child) {
+                    return found
+                }
+            }
+        } else if let array = value as? [Any] {
+            for child in array {
+                if let found = findMetadata(in: child) {
+                    return found
+                }
+            }
+        }
+        return nil
+    }
+
+    private func parseFeature(
+        name: String,
+        blocked: [[String: Any]],
+        progress: [[String: Any]],
+        previousLimit: Double?
+    ) -> ChatGPTFeatureSnapshot? {
+        let blockedEntry = blocked.first { ($0["name"] as? String) == name }
+        let progressEntry = progress.first { ($0["feature_name"] as? String) == name }
+
+        guard blockedEntry != nil || progressEntry != nil else { return nil }
+
+        let remaining: Int? = {
+            if let value = (progressEntry?["remaining"] as? NSNumber)?.intValue {
+                return value
+            }
+            if blockedEntry != nil {
+                return 0
+            }
+            return nil
+        }()
+
+        let limit = (blockedEntry?["limit"] as? NSNumber)?.doubleValue ?? previousLimit
+        let resetString = (progressEntry?["reset_after"] as? String)
+            ?? (blockedEntry?["resets_after"] as? String)
+        let resetsAt = WorkMeterISODate.parse(resetString)
+
+        return ChatGPTFeatureSnapshot(
+            name: name,
+            remaining: remaining,
+            limit: limit,
+            resetsAt: resetsAt,
+            blocked: blockedEntry != nil
+        )
     }
 }
 
@@ -403,6 +609,7 @@ private enum WorkMeterLog {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
+
     private let fiveHourItem = NSMenuItem(title: "5-hour: —", action: nil, keyEquivalent: "")
     private let weeklyItem = NSMenuItem(title: "Weekly: —", action: nil, keyEquivalent: "")
     private let creditsItem = NSMenuItem(title: "Credits: —", action: nil, keyEquivalent: "")
@@ -410,9 +617,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let planItem = NSMenuItem(title: "Plan: —", action: nil, keyEquivalent: "")
     private let connectionItem = NSMenuItem(title: "Status: —", action: nil, keyEquivalent: "")
     private let updatedItem = NSMenuItem(title: "Last confirmed: —", action: nil, keyEquivalent: "")
+
+    private let proItem = NSMenuItem(title: "Pro / Reasoning: not imported", action: nil, keyEquivalent: "")
+    private let researchItem = NSMenuItem(title: "Deep Research: not imported", action: nil, keyEquivalent: "")
+    private let imageGenItem = NSMenuItem(title: "Image generation: not imported", action: nil, keyEquivalent: "")
+    private let blockedModelsItem = NSMenuItem(title: "Blocked Pro models: —", action: nil, keyEquivalent: "")
+    private let chatGPTSourceItem = NSMenuItem(title: "Source: manual import • local only", action: nil, keyEquivalent: "")
+    private let chatGPTUpdatedItem = NSMenuItem(title: "Imported: —", action: nil, keyEquivalent: "")
+
     private let reader = CodexUsageReader()
     private let cache = UsageCache()
+    private let chatGPTCache = ChatGPTUsageCache()
+    private let chatGPTImporter = ChatGPTUsageImporter()
+
     private var snapshot: UsageSnapshot?
+    private var chatGPTSnapshot: ChatGPTUsageSnapshot?
     private var lastRefreshError: String?
     private var lastRefreshFailureKind: RefreshFailureKind?
     private var loadedFromCache = false
@@ -428,9 +647,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let cached = cache.load() {
             snapshot = cached
             loadedFromCache = true
-            WorkMeterLog.write("loaded cached usage snapshot from \(cached.fetchedAt)")
-            updateDisplay()
+            WorkMeterLog.write("loaded cached Codex usage snapshot from \(cached.fetchedAt)")
         }
+        if let imported = chatGPTCache.load() {
+            chatGPTSnapshot = imported
+            WorkMeterLog.write("loaded imported ChatGPT usage snapshot from \(imported.importedAt)")
+        }
+        updateDisplay()
 
         refreshNow()
         refreshTimer = Timer.scheduledTimer(timeInterval: refreshInterval,
@@ -454,11 +677,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.isVisible = true
         if let button = statusItem.button {
-            // Use text only. This is intentionally more conservative than an SF Symbol so
-            // the item remains visible across Intel Macs and different menu-bar setups.
             button.image = nil
             button.title = "⚡ Work"
-            button.toolTip = "ChatGPT Work / Codex usage"
+            button.toolTip = "ChatGPT & Codex usage"
             WorkMeterLog.write("status item created; initial title=\(button.title)")
         } else {
             WorkMeterLog.write("ERROR: NSStatusItem.button was nil")
@@ -467,9 +688,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupMenu() {
-        let header = NSMenuItem(title: "Work / Codex allowance", action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
+        let codexHeader = NSMenuItem(title: "Work / Codex allowance", action: nil, keyEquivalent: "")
+        codexHeader.isEnabled = false
+        menu.addItem(codexHeader)
         menu.addItem(.separator())
 
         [fiveHourItem, weeklyItem, creditsItem, resetsItem, planItem, connectionItem, updatedItem].forEach {
@@ -479,7 +700,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let refresh = NSMenuItem(title: "Refresh now", action: #selector(refreshNow), keyEquivalent: "r")
+        let chatGPTHeader = NSMenuItem(title: "ChatGPT advanced features (experimental)", action: nil, keyEquivalent: "")
+        chatGPTHeader.isEnabled = false
+        menu.addItem(chatGPTHeader)
+
+        [proItem, researchItem, imageGenItem, blockedModelsItem, chatGPTSourceItem, chatGPTUpdatedItem].forEach {
+            $0.isEnabled = false
+            menu.addItem($0)
+        }
+        blockedModelsItem.isHidden = true
+
+        let importItem = NSMenuItem(title: "Import ChatGPT usage from clipboard…", action: #selector(importChatGPTUsageFromClipboard), keyEquivalent: "i")
+        importItem.target = self
+        menu.addItem(importItem)
+
+        let clearImported = NSMenuItem(title: "Clear imported ChatGPT usage", action: #selector(clearImportedChatGPTUsage), keyEquivalent: "")
+        clearImported.target = self
+        menu.addItem(clearImported)
+
+        let guide = NSMenuItem(title: "Open ChatGPT usage import guide", action: #selector(openImportGuide), keyEquivalent: "")
+        guide.target = self
+        menu.addItem(guide)
+
+        menu.addItem(.separator())
+
+        let refresh = NSMenuItem(title: "Refresh Codex now", action: #selector(refreshNow), keyEquivalent: "r")
         refresh.target = self
         menu.addItem(refresh)
 
@@ -516,7 +761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     WorkMeterLog.write("usage refresh failed: \(message)")
                     strongSelf.lastRefreshError = message
                     strongSelf.lastRefreshFailureKind = strongSelf.classifyFailure(error)
-                    if strongSelf.snapshot != nil {
+                    if strongSelf.snapshot != nil || strongSelf.chatGPTSnapshot != nil {
                         strongSelf.updateDisplay()
                     } else {
                         strongSelf.showError(message)
@@ -526,18 +771,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func importChatGPTUsageFromClipboard() {
+        guard let text = NSPasteboard.general.string(forType: NSPasteboard.PasteboardType.string) else {
+            showImportAlert(error: ChatGPTImportError.emptyClipboard.localizedDescription)
+            return
+        }
+
+        switch chatGPTImporter.parse(text, previous: chatGPTSnapshot) {
+        case .success(let imported):
+            chatGPTSnapshot = imported
+            chatGPTCache.save(imported)
+            WorkMeterLog.write("ChatGPT usage imported manually from clipboard")
+            updateDisplay()
+
+            let alert = NSAlert()
+            alert.messageText = "ChatGPT usage imported"
+            alert.informativeText = "WorkMeter saved only the parsed counters and reset times on this Mac. It did not read browser cookies or your ChatGPT session."
+            alert.alertStyle = .informational
+            alert.runModal()
+        case .failure(let error):
+            showImportAlert(error: error.localizedDescription)
+        }
+    }
+
+    @objc private func clearImportedChatGPTUsage() {
+        chatGPTSnapshot = nil
+        chatGPTCache.clear()
+        WorkMeterLog.write("cleared imported ChatGPT usage snapshot")
+        updateDisplay()
+    }
+
+    @objc private func openImportGuide() {
+        guard let url = URL(string: "https://github.com/YuLiu0629/WorkMeter/blob/main/docs/CHATGPT-USAGE.md") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func showImportAlert(error: String) {
+        let alert = NSAlert()
+        alert.messageText = "Could not import ChatGPT usage"
+        alert.informativeText = "\(error)\n\nOpen ChatGPT Web → DevTools → Network → conversation/init → Response, copy the conversation_detail_metadata JSON object, then choose Import again."
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
     @objc private func updateDisplay() {
+        updateChatGPTDisplay()
+
         guard let snapshot = snapshot else {
             if !isRefreshing {
-                statusItem.button?.title = "⚡ Work"
+                if let compactPro = compactProText() {
+                    statusItem.button?.title = "⚡ \(compactPro)"
+                } else {
+                    statusItem.button?.title = "⚡ Work"
+                }
             }
             return
         }
 
         let fiveTitle = compactWindowText(label: "5h", window: snapshot.fiveHour)
         let weeklyTitle = compactWindowText(label: "W", window: snapshot.weekly)
+        let proSuffix = compactProText().map { " · \($0)" } ?? ""
         let staleSuffix = lastRefreshError == nil ? "" : " ⚠"
-        statusItem.button?.title = "⚡ \(fiveTitle) · \(weeklyTitle)\(staleSuffix)"
+        statusItem.button?.title = "⚡ \(fiveTitle) · \(weeklyTitle)\(proSuffix)\(staleSuffix)"
 
         fiveHourItem.title = windowText(label: "5-hour", window: snapshot.fiveHour)
         weeklyItem.title = windowText(label: "Weekly", window: snapshot.weekly)
@@ -582,6 +877,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updatedItem.title = "\(prefix): \(timeFormatter.string(from: snapshot.fetchedAt)) • \(age)"
     }
 
+    private func updateChatGPTDisplay() {
+        guard let imported = chatGPTSnapshot else {
+            proItem.title = "Pro / Reasoning: not imported"
+            researchItem.title = "Deep Research: not imported"
+            imageGenItem.title = "Image generation: not imported"
+            blockedModelsItem.isHidden = true
+            chatGPTSourceItem.title = "Source: manual import • no browser cookies"
+            chatGPTUpdatedItem.title = "Imported: —"
+            return
+        }
+
+        proItem.title = chatGPTFeatureText(label: "Pro / Reasoning", feature: imported.reason)
+        researchItem.title = chatGPTFeatureText(label: "Deep Research", feature: imported.deepResearch)
+        imageGenItem.title = chatGPTFeatureText(label: "Image generation", feature: imported.imageGen)
+
+        if imported.blockedModels.isEmpty {
+            blockedModelsItem.isHidden = true
+        } else {
+            blockedModelsItem.isHidden = false
+            blockedModelsItem.title = "Blocked Pro models: \(imported.blockedModels.count)"
+            blockedModelsItem.toolTip = imported.blockedModels.joined(separator: ", ")
+        }
+
+        chatGPTSourceItem.title = "Source: imported manually • local only"
+        chatGPTUpdatedItem.title = "Imported: \(timeFormatter.string(from: imported.importedAt)) • \(ageText(since: imported.importedAt))"
+    }
+
+    private func compactProText() -> String? {
+        guard let feature = chatGPTSnapshot?.reason else { return nil }
+        if let reset = feature.resetsAt, reset <= Date() {
+            return "P —"
+        }
+        if let remaining = feature.remaining {
+            if let limit = feature.limit {
+                return "P \(remaining)/\(formatLimit(limit))"
+            }
+            return "P \(remaining)"
+        }
+        return feature.blocked ? "P 0" : nil
+    }
+
     private func compactWindowText(label: String, window: LimitWindow?) -> String {
         guard let window = window else { return "\(label) —" }
         if let reset = window.resetsAt, reset <= Date() {
@@ -601,6 +937,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return "\(label): \(window.leftPercent)% left • resets in \(remainingText(to: reset))"
         }
         return "\(label): \(window.leftPercent)% left"
+    }
+
+    private func chatGPTFeatureText(label: String, feature: ChatGPTFeatureSnapshot?) -> String {
+        guard let feature = feature else {
+            return "\(label): not reported in imported metadata"
+        }
+
+        if let reset = feature.resetsAt, reset <= Date() {
+            return "\(label): previous snapshot expired • import again"
+        }
+
+        var value: String
+        if let remaining = feature.remaining {
+            if let limit = feature.limit {
+                value = "\(remaining) / \(formatLimit(limit)) remaining"
+            } else {
+                value = "\(remaining) remaining"
+            }
+        } else if feature.blocked {
+            value = "blocked"
+        } else {
+            value = "reported"
+        }
+
+        if let reset = feature.resetsAt {
+            value += " • resets in \(remainingText(to: reset))"
+        }
+        return "\(label): \(value)"
+    }
+
+    private func formatLimit(_ limit: Double) -> String {
+        if limit.rounded() == limit {
+            return String(Int(limit))
+        }
+        return String(format: "%.1f", limit)
     }
 
     private func remainingText(to date: Date) -> String {
@@ -666,15 +1037,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showError(_ message: String) {
-        statusItem.button?.title = "⚡ !"
-        fiveHourItem.title = "Could not read usage"
+        if let compactPro = compactProText() {
+            statusItem.button?.title = "⚡ ! · \(compactPro)"
+        } else {
+            statusItem.button?.title = "⚡ !"
+        }
+        fiveHourItem.title = "Could not read Codex usage"
         weeklyItem.title = message
         creditsItem.title = "Credits: —"
         resetsItem.isHidden = true
         planItem.isHidden = true
-        connectionItem.title = "Status: no cached usage available"
+        connectionItem.title = "Status: no cached Codex usage available"
         connectionItem.toolTip = message
-        updatedItem.title = "Use “Refresh now” to retry"
+        updatedItem.title = "Use “Refresh Codex now” to retry"
+        updateChatGPTDisplay()
     }
 
     @objc private func quitApp() {
@@ -689,8 +1065,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
 }
 
-// Explicit AppKit bootstrap. Keeping the delegate in a top-level strong reference avoids
-// lifecycle differences across Swift/Xcode versions for tiny single-file menu-bar apps.
 let workMeterApplication = NSApplication.shared
 let workMeterDelegate = AppDelegate()
 workMeterApplication.delegate = workMeterDelegate
