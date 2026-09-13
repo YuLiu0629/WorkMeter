@@ -1,0 +1,109 @@
+name: Build WorkMeter Beta
+
+on:
+  push:
+    branches:
+      - experimental/chatgpt-usage-v0.3
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve beta version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < .release-version)"
+          [[ "$VERSION" == v* ]] || VERSION="v$VERSION"
+          SHORT_VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_version=$SHORT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build universal app
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.short_version }}"
+          SDK="$(xcrun --sdk macosx --show-sdk-path)"
+          mkdir -p build/x86_64 build/arm64 dist/WorkMeter-Beta/WorkMeter.app/Contents/MacOS
+
+          cp WorkMeter.swift build/WorkMeter.release.swift
+          sed -i '' "s/private let appVersion = \"[^\"]*\"/private let appVersion = \"$VERSION\"/" build/WorkMeter.release.swift
+
+          xcrun --sdk macosx swiftc \
+            -sdk "$SDK" \
+            -target x86_64-apple-macosx11.0 \
+            -O \
+            -framework AppKit \
+            -framework Foundation \
+            build/WorkMeter.release.swift \
+            -o build/x86_64/WorkMeter
+
+          xcrun --sdk macosx swiftc \
+            -sdk "$SDK" \
+            -target arm64-apple-macosx11.0 \
+            -O \
+            -framework AppKit \
+            -framework Foundation \
+            build/WorkMeter.release.swift \
+            -o build/arm64/WorkMeter
+
+          lipo -create build/x86_64/WorkMeter build/arm64/WorkMeter \
+            -output dist/WorkMeter-Beta/WorkMeter.app/Contents/MacOS/WorkMeter
+          chmod +x dist/WorkMeter-Beta/WorkMeter.app/Contents/MacOS/WorkMeter
+
+          cat > dist/WorkMeter-Beta/WorkMeter.app/Contents/Info.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key><string>en</string>
+            <key>CFBundleExecutable</key><string>WorkMeter</string>
+            <key>CFBundleIdentifier</key><string>app.workmeter.menubar</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundleName</key><string>WorkMeter</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSUIElement</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+          plutil -lint dist/WorkMeter-Beta/WorkMeter.app/Contents/Info.plist
+          codesign --force --deep --sign - dist/WorkMeter-Beta/WorkMeter.app
+          codesign --verify --deep --strict dist/WorkMeter-Beta/WorkMeter.app
+
+      - name: Prepare beta bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "release/Install WorkMeter.command" dist/WorkMeter-Beta/
+          cp "release/Uninstall WorkMeter.command" dist/WorkMeter-Beta/
+          cp "release/Diagnose WorkMeter.command" dist/WorkMeter-Beta/
+          cp "release/README-FIRST.txt" dist/WorkMeter-Beta/
+          cp LICENSE dist/WorkMeter-Beta/
+          cp PRIVACY.md dist/WorkMeter-Beta/
+          chmod +x dist/WorkMeter-Beta/*.command
+
+      - name: Package beta
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          ditto -c -k --keepParent WorkMeter-Beta WorkMeter-v${{ steps.meta.outputs.short_version }}-mac.zip
+
+      - name: Upload beta artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WorkMeter-${{ steps.meta.outputs.version }}-mac
+          path: dist/WorkMeter-v${{ steps.meta.outputs.short_version }}-mac.zip
+          if-no-files-found: error
