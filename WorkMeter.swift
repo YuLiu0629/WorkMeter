@@ -1,10 +1,12 @@
 import AppKit
 import Foundation
 import Darwin
+import Network
 
 private let appVersion = "0.2.1"
 private let refreshInterval: TimeInterval = 180
 private let requestTimeout: TimeInterval = 15
+private let browserBridgePort: UInt16 = 17891
 
 private struct LimitWindow: Codable {
     let usedPercent: Double
@@ -40,6 +42,7 @@ private struct ChatGPTUsageSnapshot: Codable {
     let imageGen: ChatGPTFeatureSnapshot?
     let blockedModels: [String]
     let importedAt: Date
+    let source: String?
 }
 
 private final class UsageCache {
@@ -170,7 +173,11 @@ private enum WorkMeterISODate {
 }
 
 private final class ChatGPTUsageImporter {
-    func parse(_ text: String, previous: ChatGPTUsageSnapshot?) -> Result<ChatGPTUsageSnapshot, Error> {
+    func parse(
+        _ text: String,
+        previous: ChatGPTUsageSnapshot?,
+        source: String
+    ) -> Result<ChatGPTUsageSnapshot, Error> {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .failure(ChatGPTImportError.emptyClipboard) }
 
@@ -214,7 +221,8 @@ private final class ChatGPTUsageImporter {
             deepResearch: deepResearch,
             imageGen: imageGen,
             blockedModels: blockedModels,
-            importedAt: Date()
+            importedAt: Date(),
+            source: source
         ))
     }
 
@@ -287,6 +295,183 @@ private final class ChatGPTUsageImporter {
             resetsAt: resetsAt,
             blocked: blockedEntry != nil
         )
+    }
+}
+
+private final class ChatGPTBrowserBridge {
+    enum State {
+        case starting
+        case listening
+        case failed(String)
+    }
+
+    private let queue = DispatchQueue(label: "app.workmeter.browser-bridge")
+    private let onPayload: (String) -> Void
+    private let onState: (State) -> Void
+    private var listener: NWListener?
+
+    init(onPayload: @escaping (String) -> Void, onState: @escaping (State) -> Void) {
+        self.onPayload = onPayload
+        self.onState = onState
+    }
+
+    func start() {
+        guard listener == nil else { return }
+        onState(.starting)
+
+        do {
+            guard let port = NWEndpoint.Port(rawValue: browserBridgePort) else {
+                onState(.failed("invalid local port"))
+                return
+            }
+            let newListener = try NWListener(using: .tcp, on: port)
+            newListener.stateUpdateHandler = { [weak self] state in
+                guard let self = self else { return }
+                switch state {
+                case .ready:
+                    WorkMeterLog.write("browser companion bridge listening on 127.0.0.1:\(browserBridgePort)")
+                    self.onState(.listening)
+                case .failed(let error):
+                    WorkMeterLog.write("browser companion bridge failed: \(error)")
+                    self.onState(.failed(error.localizedDescription))
+                default:
+                    break
+                }
+            }
+            newListener.newConnectionHandler = { [weak self] connection in
+                self?.handle(connection)
+            }
+            newListener.start(queue: queue)
+            listener = newListener
+        } catch {
+            WorkMeterLog.write("browser companion bridge start failed: \(error.localizedDescription)")
+            onState(.failed(error.localizedDescription))
+        }
+    }
+
+    func stop() {
+        listener?.cancel()
+        listener = nil
+    }
+
+    private func handle(_ connection: NWConnection) {
+        connection.start(queue: queue)
+        var buffer = Data()
+
+        func receiveMore() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 32_768) { [weak self] data, _, complete, error in
+                guard let self = self else {
+                    connection.cancel()
+                    return
+                }
+
+                if let data = data, !data.isEmpty {
+                    buffer.append(data)
+                }
+
+                if buffer.count > 131_072 {
+                    self.respond(connection, status: "413 Payload Too Large", body: "{\"ok\":false}")
+                    return
+                }
+
+                if let request = self.completeRequest(from: buffer) {
+                    self.process(request, connection: connection)
+                    return
+                }
+
+                if complete || error != nil {
+                    self.respond(connection, status: "400 Bad Request", body: "{\"ok\":false}")
+                    return
+                }
+
+                receiveMore()
+            }
+        }
+
+        receiveMore()
+    }
+
+    private struct HTTPRequest {
+        let method: String
+        let path: String
+        let headers: [String: String]
+        let body: Data
+    }
+
+    private func completeRequest(from data: Data) -> HTTPRequest? {
+        let separator = Data("\r\n\r\n".utf8)
+        guard let range = data.range(of: separator) else { return nil }
+
+        let headerData = data.subdata(in: data.startIndex..<range.lowerBound)
+        guard let headerText = String(data: headerData, encoding: .utf8) else { return nil }
+        let lines = headerText.components(separatedBy: "\r\n")
+        guard let firstLine = lines.first else { return nil }
+        let firstParts = firstLine.split(separator: " ")
+        guard firstParts.count >= 2 else { return nil }
+
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = line[..<colon].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            headers[name] = value
+        }
+
+        let length = Int(headers["content-length"] ?? "0") ?? 0
+        let bodyStart = range.upperBound
+        guard data.count >= bodyStart + length else { return nil }
+        let body = data.subdata(in: bodyStart..<(bodyStart + length))
+
+        return HTTPRequest(
+            method: String(firstParts[0]),
+            path: String(firstParts[1]),
+            headers: headers,
+            body: body
+        )
+    }
+
+    private func process(_ request: HTTPRequest, connection: NWConnection) {
+        let origin = request.headers["origin"] ?? ""
+        if origin.hasPrefix("http://") || origin.hasPrefix("https://") {
+            respond(connection, status: "403 Forbidden", body: "{\"ok\":false,\"error\":\"browser-origin-not-allowed\"}")
+            return
+        }
+
+        if request.method == "OPTIONS" {
+            respond(connection, status: "204 No Content", body: "")
+            return
+        }
+
+        guard request.method == "POST", request.path == "/chatgpt-usage" else {
+            respond(connection, status: "404 Not Found", body: "{\"ok\":false}")
+            return
+        }
+
+        guard !request.body.isEmpty,
+              let text = String(data: request.body, encoding: .utf8) else {
+            respond(connection, status: "400 Bad Request", body: "{\"ok\":false,\"error\":\"empty-body\"}")
+            return
+        }
+
+        onPayload(text)
+        respond(connection, status: "200 OK", body: "{\"ok\":true}")
+    }
+
+    private func respond(_ connection: NWConnection, status: String, body: String) {
+        let bodyData = Data(body.utf8)
+        var headers = "HTTP/1.1 \(status)\r\n"
+        headers += "Content-Type: application/json; charset=utf-8\r\n"
+        headers += "Content-Length: \(bodyData.count)\r\n"
+        headers += "Access-Control-Allow-Origin: *\r\n"
+        headers += "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
+        headers += "Access-Control-Allow-Headers: Content-Type\r\n"
+        headers += "Connection: close\r\n\r\n"
+
+        var response = Data(headers.utf8)
+        response.append(bodyData)
+        connection.send(content: response, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
     }
 }
 
@@ -549,21 +734,11 @@ private final class CodexUsageReader {
     }
 
     private func parseCredits(_ object: [String: Any]?) -> String {
-        guard let object = object else {
-            return "Not exposed"
-        }
-        if (object["unlimited"] as? Bool) == true {
-            return "Unlimited"
-        }
-        if let balance = object["balance"] as? String, !balance.isEmpty {
-            return balance
-        }
-        if let balance = object["balance"] as? NSNumber {
-            return balance.stringValue
-        }
-        if (object["hasCredits"] as? Bool) == false {
-            return "0"
-        }
+        guard let object = object else { return "Not exposed" }
+        if (object["unlimited"] as? Bool) == true { return "Unlimited" }
+        if let balance = object["balance"] as? String, !balance.isEmpty { return balance }
+        if let balance = object["balance"] as? NSNumber { return balance.stringValue }
+        if (object["hasCredits"] as? Bool) == false { return "0" }
         return "Not exposed"
     }
 
@@ -618,18 +793,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let connectionItem = NSMenuItem(title: "Status: —", action: nil, keyEquivalent: "")
     private let updatedItem = NSMenuItem(title: "Last confirmed: —", action: nil, keyEquivalent: "")
 
-    private let proItem = NSMenuItem(title: "Pro / Reasoning: not imported", action: nil, keyEquivalent: "")
-    private let researchItem = NSMenuItem(title: "Deep Research: not imported", action: nil, keyEquivalent: "")
-    private let imageGenItem = NSMenuItem(title: "Image generation: not imported", action: nil, keyEquivalent: "")
+    private let proItem = NSMenuItem(title: "Pro / Reasoning: waiting for browser", action: nil, keyEquivalent: "")
+    private let researchItem = NSMenuItem(title: "Deep Research: waiting for browser", action: nil, keyEquivalent: "")
+    private let imageGenItem = NSMenuItem(title: "Image generation: waiting for browser", action: nil, keyEquivalent: "")
     private let blockedModelsItem = NSMenuItem(title: "Blocked Pro models: —", action: nil, keyEquivalent: "")
-    private let chatGPTSourceItem = NSMenuItem(title: "Source: manual import • local only", action: nil, keyEquivalent: "")
-    private let chatGPTUpdatedItem = NSMenuItem(title: "Imported: —", action: nil, keyEquivalent: "")
+    private let chatGPTSourceItem = NSMenuItem(title: "Source: browser companion / manual import", action: nil, keyEquivalent: "")
+    private let chatGPTUpdatedItem = NSMenuItem(title: "Last ChatGPT update: —", action: nil, keyEquivalent: "")
+    private let browserBridgeItem = NSMenuItem(title: "Browser bridge: starting…", action: nil, keyEquivalent: "")
 
     private let reader = CodexUsageReader()
     private let cache = UsageCache()
     private let chatGPTCache = ChatGPTUsageCache()
     private let chatGPTImporter = ChatGPTUsageImporter()
 
+    private var browserBridge: ChatGPTBrowserBridge?
     private var snapshot: UsageSnapshot?
     private var chatGPTSnapshot: ChatGPTUsageSnapshot?
     private var lastRefreshError: String?
@@ -651,11 +828,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let imported = chatGPTCache.load() {
             chatGPTSnapshot = imported
-            WorkMeterLog.write("loaded imported ChatGPT usage snapshot from \(imported.importedAt)")
+            WorkMeterLog.write("loaded cached ChatGPT usage snapshot from \(imported.importedAt)")
         }
-        updateDisplay()
 
+        browserBridge = ChatGPTBrowserBridge(
+            onPayload: { [weak self] text in
+                DispatchQueue.main.async {
+                    self?.handleBrowserUsagePayload(text)
+                }
+            },
+            onState: { [weak self] state in
+                DispatchQueue.main.async {
+                    self?.updateBrowserBridgeState(state)
+                }
+            }
+        )
+        browserBridge?.start()
+
+        updateDisplay()
         refreshNow()
+
         refreshTimer = Timer.scheduledTimer(timeInterval: refreshInterval,
                                             target: self,
                                             selector: #selector(refreshNow),
@@ -671,6 +863,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
         countdownTimer?.invalidate()
+        browserBridge?.stop()
     }
 
     private func setupStatusItem() {
@@ -700,27 +893,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let chatGPTHeader = NSMenuItem(title: "ChatGPT advanced features (experimental)", action: nil, keyEquivalent: "")
+        let chatGPTHeader = NSMenuItem(title: "ChatGPT advanced features (beta)", action: nil, keyEquivalent: "")
         chatGPTHeader.isEnabled = false
         menu.addItem(chatGPTHeader)
 
-        [proItem, researchItem, imageGenItem, blockedModelsItem, chatGPTSourceItem, chatGPTUpdatedItem].forEach {
+        [proItem, researchItem, imageGenItem, blockedModelsItem, chatGPTSourceItem, chatGPTUpdatedItem, browserBridgeItem].forEach {
             $0.isEnabled = false
             menu.addItem($0)
         }
         blockedModelsItem.isHidden = true
 
+        let companionGuide = NSMenuItem(title: "Set up automatic browser companion…", action: #selector(openCompanionGuide), keyEquivalent: "")
+        companionGuide.target = self
+        menu.addItem(companionGuide)
+
         let importItem = NSMenuItem(title: "Import ChatGPT usage from clipboard…", action: #selector(importChatGPTUsageFromClipboard), keyEquivalent: "i")
         importItem.target = self
         menu.addItem(importItem)
 
-        let clearImported = NSMenuItem(title: "Clear imported ChatGPT usage", action: #selector(clearImportedChatGPTUsage), keyEquivalent: "")
+        let clearImported = NSMenuItem(title: "Clear ChatGPT usage cache", action: #selector(clearImportedChatGPTUsage), keyEquivalent: "")
         clearImported.target = self
         menu.addItem(clearImported)
-
-        let guide = NSMenuItem(title: "Open ChatGPT usage import guide", action: #selector(openImportGuide), keyEquivalent: "")
-        guide.target = self
-        menu.addItem(guide)
 
         menu.addItem(.separator())
 
@@ -731,6 +924,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let quit = NSMenuItem(title: "Quit WorkMeter", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
+    }
+
+    private func updateBrowserBridgeState(_ state: ChatGPTBrowserBridge.State) {
+        switch state {
+        case .starting:
+            browserBridgeItem.title = "Browser bridge: starting…"
+            browserBridgeItem.toolTip = nil
+        case .listening:
+            browserBridgeItem.title = "Browser bridge: ready • localhost only"
+            browserBridgeItem.toolTip = "Listening on 127.0.0.1:\(browserBridgePort). It accepts sanitized usage data from the optional WorkMeter browser companion."
+        case .failed(let message):
+            browserBridgeItem.title = "⚠ Browser bridge unavailable"
+            browserBridgeItem.toolTip = message
+        }
+    }
+
+    private func handleBrowserUsagePayload(_ text: String) {
+        switch chatGPTImporter.parse(text, previous: chatGPTSnapshot, source: "browser") {
+        case .success(let imported):
+            chatGPTSnapshot = imported
+            chatGPTCache.save(imported)
+            WorkMeterLog.write("ChatGPT usage updated automatically by browser companion")
+            updateDisplay()
+        case .failure(let error):
+            WorkMeterLog.write("browser companion payload rejected: \(error.localizedDescription)")
+        }
     }
 
     @objc private func refreshNow() {
@@ -749,7 +968,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 strongSelf.isRefreshing = false
                 switch result {
                 case .success(let snapshot):
-                    WorkMeterLog.write("usage refresh succeeded")
+                    WorkMeterLog.write("Codex usage refresh succeeded")
                     strongSelf.snapshot = snapshot
                     strongSelf.loadedFromCache = false
                     strongSelf.lastRefreshError = nil
@@ -758,7 +977,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     strongSelf.updateDisplay()
                 case .failure(let error):
                     let message = error.localizedDescription
-                    WorkMeterLog.write("usage refresh failed: \(message)")
+                    WorkMeterLog.write("Codex usage refresh failed: \(message)")
                     strongSelf.lastRefreshError = message
                     strongSelf.lastRefreshFailureKind = strongSelf.classifyFailure(error)
                     if strongSelf.snapshot != nil || strongSelf.chatGPTSnapshot != nil {
@@ -772,12 +991,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func importChatGPTUsageFromClipboard() {
-        guard let text = NSPasteboard.general.string(forType: NSPasteboard.PasteboardType.string) else {
+        guard let text = NSPasteboard.general.string(forType: .string) else {
             showImportAlert(error: ChatGPTImportError.emptyClipboard.localizedDescription)
             return
         }
 
-        switch chatGPTImporter.parse(text, previous: chatGPTSnapshot) {
+        switch chatGPTImporter.parse(text, previous: chatGPTSnapshot, source: "manual") {
         case .success(let imported):
             chatGPTSnapshot = imported
             chatGPTCache.save(imported)
@@ -786,7 +1005,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let alert = NSAlert()
             alert.messageText = "ChatGPT usage imported"
-            alert.informativeText = "WorkMeter saved only the parsed counters and reset times on this Mac. It did not read browser cookies or your ChatGPT session."
+            alert.informativeText = "WorkMeter saved only parsed counters and reset times on this Mac. It did not read browser cookies or your ChatGPT session."
             alert.alertStyle = .informational
             alert.runModal()
         case .failure(let error):
@@ -797,19 +1016,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func clearImportedChatGPTUsage() {
         chatGPTSnapshot = nil
         chatGPTCache.clear()
-        WorkMeterLog.write("cleared imported ChatGPT usage snapshot")
+        WorkMeterLog.write("cleared ChatGPT usage snapshot")
         updateDisplay()
     }
 
-    @objc private func openImportGuide() {
-        guard let url = URL(string: "https://github.com/YuLiu0629/WorkMeter/blob/main/docs/CHATGPT-USAGE.md") else { return }
+    @objc private func openCompanionGuide() {
+        guard let url = URL(string: "https://github.com/YuLiu0629/WorkMeter/blob/experimental/chatgpt-usage-v0.3/docs/CHATGPT-COMPANION.md") else { return }
         NSWorkspace.shared.open(url)
     }
 
     private func showImportAlert(error: String) {
         let alert = NSAlert()
         alert.messageText = "Could not import ChatGPT usage"
-        alert.informativeText = "\(error)\n\nOpen ChatGPT Web → DevTools → Network → conversation/init → Response, copy the conversation_detail_metadata JSON object, then choose Import again."
+        alert.informativeText = "\(error)\n\nFallback: ChatGPT Web → DevTools → Network → conversation/init → Response, copy the conversation_detail_metadata JSON object, then choose Import again."
         alert.alertStyle = .warning
         alert.runModal()
     }
@@ -879,12 +1098,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateChatGPTDisplay() {
         guard let imported = chatGPTSnapshot else {
-            proItem.title = "Pro / Reasoning: not imported"
-            researchItem.title = "Deep Research: not imported"
-            imageGenItem.title = "Image generation: not imported"
+            proItem.title = "Pro / Reasoning: waiting for ChatGPT data"
+            researchItem.title = "Deep Research: waiting for ChatGPT data"
+            imageGenItem.title = "Image generation: waiting for ChatGPT data"
             blockedModelsItem.isHidden = true
-            chatGPTSourceItem.title = "Source: manual import • no browser cookies"
-            chatGPTUpdatedItem.title = "Imported: —"
+            chatGPTSourceItem.title = "Source: browser companion / manual fallback"
+            chatGPTUpdatedItem.title = "Last ChatGPT update: —"
             return
         }
 
@@ -900,15 +1119,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             blockedModelsItem.toolTip = imported.blockedModels.joined(separator: ", ")
         }
 
-        chatGPTSourceItem.title = "Source: imported manually • local only"
-        chatGPTUpdatedItem.title = "Imported: \(timeFormatter.string(from: imported.importedAt)) • \(ageText(since: imported.importedAt))"
+        if imported.source == "browser" {
+            chatGPTSourceItem.title = "Source: browser companion • automatic"
+        } else {
+            chatGPTSourceItem.title = "Source: manual import • local only"
+        }
+        chatGPTUpdatedItem.title = "Last ChatGPT update: \(timeFormatter.string(from: imported.importedAt)) • \(ageText(since: imported.importedAt))"
     }
 
     private func compactProText() -> String? {
         guard let feature = chatGPTSnapshot?.reason else { return nil }
-        if let reset = feature.resetsAt, reset <= Date() {
-            return "P —"
-        }
+        if let reset = feature.resetsAt, reset <= Date() { return "P —" }
         if let remaining = feature.remaining {
             if let limit = feature.limit {
                 return "P \(remaining)/\(formatLimit(limit))"
@@ -920,16 +1141,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func compactWindowText(label: String, window: LimitWindow?) -> String {
         guard let window = window else { return "\(label) —" }
-        if let reset = window.resetsAt, reset <= Date() {
-            return "\(label) —"
-        }
+        if let reset = window.resetsAt, reset <= Date() { return "\(label) —" }
         return "\(label) \(window.leftPercent)%"
     }
 
     private func windowText(label: String, window: LimitWindow?) -> String {
-        guard let window = window else {
-            return "\(label): not reported"
-        }
+        guard let window = window else { return "\(label): not reported" }
         if let reset = window.resetsAt {
             if reset <= Date() {
                 return "\(label): previous window expired • refresh required"
@@ -941,11 +1158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func chatGPTFeatureText(label: String, feature: ChatGPTFeatureSnapshot?) -> String {
         guard let feature = feature else {
-            return "\(label): not reported in imported metadata"
+            return "\(label): not reported in latest ChatGPT metadata"
         }
 
         if let reset = feature.resetsAt, reset <= Date() {
-            return "\(label): previous snapshot expired • import again"
+            return "\(label): previous snapshot expired • waiting for browser refresh"
         }
 
         var value: String
@@ -968,9 +1185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func formatLimit(_ limit: Double) -> String {
-        if limit.rounded() == limit {
-            return String(Int(limit))
-        }
+        if limit.rounded() == limit { return String(Int(limit)) }
         return String(format: "%.1f", limit)
     }
 
@@ -980,13 +1195,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let days = total / 86_400
         let hours = (total % 86_400) / 3_600
         let minutes = (total % 3_600) / 60
-
-        if days > 0 {
-            return "\(days)d \(hours)h"
-        }
-        if hours > 0 {
-            return "\(hours)h \(minutes)m"
-        }
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
         return "\(max(1, minutes))m"
     }
 
@@ -1037,11 +1247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showError(_ message: String) {
-        if let compactPro = compactProText() {
-            statusItem.button?.title = "⚡ ! · \(compactPro)"
-        } else {
-            statusItem.button?.title = "⚡ !"
-        }
+        statusItem.button?.title = compactProText().map { "⚡ ! · \($0)" } ?? "⚡ !"
         fiveHourItem.title = "Could not read Codex usage"
         weeklyItem.title = message
         creditsItem.title = "Credits: —"
