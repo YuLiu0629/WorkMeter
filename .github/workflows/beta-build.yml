@@ -43,6 +43,7 @@ jobs:
             -O \
             -framework AppKit \
             -framework Foundation \
+            -framework Network \
             build/WorkMeter.release.swift \
             -o build/x86_64/WorkMeter
 
@@ -52,6 +53,7 @@ jobs:
             -O \
             -framework AppKit \
             -framework Foundation \
+            -framework Network \
             build/WorkMeter.release.swift \
             -o build/arm64/WorkMeter
 
@@ -92,6 +94,9 @@ jobs:
           cp "release/README-FIRST.txt" dist/WorkMeter-Beta/
           cp LICENSE dist/WorkMeter-Beta/
           cp PRIVACY.md dist/WorkMeter-Beta/
+          cp -R browser-companion dist/WorkMeter-Beta/
+          mkdir -p dist/WorkMeter-Beta/docs
+          cp docs/CHATGPT-COMPANION.md dist/WorkMeter-Beta/docs/
           chmod +x dist/WorkMeter-Beta/*.command
 
       - name: Package beta
